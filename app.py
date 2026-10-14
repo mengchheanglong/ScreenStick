@@ -1,8 +1,14 @@
+"""
+ScreenStick - Main Application Controller
+Sticky notes desktop application designed to stick directly onto your laptop screen.
+"""
+
 import sys
 import os
-import socket
-import threading
+import ctypes
+from ctypes import wintypes
 import tkinter as tk
+from typing import Dict, Optional
 
 # Ensure safe streams when launched via pythonw without a console
 if sys.stdout is None:
@@ -10,21 +16,22 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
 
-from typing import Dict, Optional
 from styles import enable_high_dpi
 from storage import StorageManager
 from note_window import NoteWindow
 from notes_hub import NotesHub
 
-IPC_PORT = 47892
+MUTEX_NAME = "ScreenStick_Application_Mutex_v1"
+TRIGGER_FILENAME = ".new_note_trigger"
+
+def get_trigger_path() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), TRIGGER_FILENAME)
 
 def bring_all_sticky_notes_to_front() -> int:
-    """Find all Sticky Note windows currently on the screen and bring them to front."""
+    """Find all ScreenStick windows currently on the screen and bring them to front."""
     if sys.platform != "win32":
         return 0
     try:
-        import ctypes
-        from ctypes import wintypes
         user32 = ctypes.windll.user32
         HWND_TOPMOST = -1
         HWND_NOTOPMOST = -2
@@ -45,7 +52,7 @@ def bring_all_sticky_notes_to_front() -> int:
         user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
         
         for hwnd in found:
-            user32.ShowWindow(hwnd, 9)
+            user32.ShowWindow(hwnd, 9) # SW_RESTORE
             user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
             user32.SetForegroundWindow(hwnd)
             user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
@@ -53,35 +60,33 @@ def bring_all_sticky_notes_to_front() -> int:
     except Exception:
         return 0
 
-def try_send_ipc_message(message: str = "NEW") -> bool:
-    """Send command to an already running instance and require acknowledgement."""
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(0.3)
-        s.connect(("127.0.0.1", IPC_PORT))
-        s.sendall(message.encode("utf-8"))
-        resp = s.recv(1024).decode("utf-8").strip()
-        s.close()
-        return resp.startswith("OK")
-    except Exception:
-        return False
-
 class StickyApp:
     def __init__(self, check_single_instance: bool = True):
         is_startup_mode = "--startup" in sys.argv
-
-        # Check if an instance is already running
-        if check_single_instance:
-            if try_send_ipc_message("STARTUP" if is_startup_mode else "NEW"):
-                bring_all_sticky_notes_to_front()
-                sys.exit(0)
 
         self.storage = StorageManager()
         active_notes = self.storage.get_active_notes()
 
         # If launched on Windows boot and user has NO notes on desktop, exit quietly
         if is_startup_mode and not active_notes:
-            sys.exit(0)
+            os._exit(0)
+
+        self._mutex = None
+        if check_single_instance and sys.platform == "win32":
+            kernel32 = ctypes.windll.kernel32
+            self._mutex = kernel32.CreateMutexW(None, False, MUTEX_NAME)
+            if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+                # Another instance is already running!
+                # 1. Bring existing notes to the front
+                bring_all_sticky_notes_to_front()
+                # 2. Drop trigger file for running instance to spawn/focus
+                try:
+                    with open(get_trigger_path(), "w") as f:
+                        f.write("NEW")
+                except Exception:
+                    pass
+                # 3. Clean OS exit - never hangs as a zombie
+                os._exit(0)
 
         # High DPI awareness for crisp Windows laptop displays
         enable_high_dpi()
@@ -94,8 +99,8 @@ class StickyApp:
         self.windows: Dict[str, NoteWindow] = {}
         self.hub: Optional[NotesHub] = None
 
-        # Start IPC server to listen for new clicks on desktop shortcut
-        self._start_ipc_server()
+        # Watch for triggers from subsequent shortcut clicks
+        self._check_trigger_file()
 
         # Ensure auto-start with Windows is enabled
         try:
@@ -106,52 +111,27 @@ class StickyApp:
 
         self._init_notes(active_notes, is_startup_mode)
 
-    def _start_ipc_server(self):
-        """Listen on local port so subsequent shortcut clicks create notes in this process."""
-        def listener():
+    def _check_trigger_file(self):
+        """Poll for trigger file created when user clicks shortcut while app is running."""
+        trigger_path = get_trigger_path()
+        if os.path.exists(trigger_path):
             try:
-                srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                srv.bind(("127.0.0.1", IPC_PORT))
-                srv.listen(5)
-                srv.settimeout(1.0)
-                while True:
-                    try:
-                        conn, _ = srv.accept()
-                        data = conn.recv(1024).decode("utf-8").strip()
-                        conn.sendall(b"OK\n")
-                        conn.close()
-                        if data == "NEW":
-                            self.root.after(10, self._on_ipc_new)
-                        elif data == "STARTUP":
-                            self.root.after(10, self._on_ipc_startup)
-                    except socket.timeout:
-                        continue
-                    except Exception:
-                        break
+                os.remove(trigger_path)
             except Exception:
                 pass
-
-        t = threading.Thread(target=listener, daemon=True)
-        t.start()
-
-    def _on_ipc_new(self):
-        """User clicked desktop shortcut while app is running -> spawn or focus note."""
-        if not self.windows:
-            self._handle_new_note(320, 160)
-        else:
-            for win in self.windows.values():
-                win.focus()
-            empty_notes = [w for w in self.windows.values() if not w.text_widget.get("1.0", "end-1c").strip() or w._is_placeholder_active]
-            if empty_notes:
-                empty_notes[0].focus()
+            # Focus existing notes or spawn new note
+            if not self.windows:
+                self._handle_new_note(320, 160)
             else:
-                self._handle_new_note()
+                for win in self.windows.values():
+                    win.focus()
+                empty_notes = [w for w in self.windows.values() if not w.text_widget.get("1.0", "end-1c").strip() or w._is_placeholder_active]
+                if empty_notes:
+                    empty_notes[0].focus()
+                else:
+                    self._handle_new_note()
 
-    def _on_ipc_startup(self):
-        """Startup triggered while already running."""
-        for win in self.windows.values():
-            win.focus()
+        self.root.after(350, self._check_trigger_file)
 
     def _init_notes(self, active_notes, is_startup_mode: bool):
         """Open existing active notes, or create one clean starter note on manual launch."""
@@ -207,16 +187,28 @@ class StickyApp:
         if self.hub and self.hub.win.winfo_exists():
             self.hub.refresh_notes()
 
-        # When the last note is deleted:
-        # Exit cleanly! DO NOT respawn any note!
-        # The desktop screen is now completely clean.
+        # When the last note is closed:
+        # Exit cleanly and terminate the process completely!
         if not self.windows:
             if not (self.hub and self.hub.win.winfo_exists()):
-                self.root.destroy()
-                sys.exit(0)
+                self._shutdown()
+
+    def _shutdown(self):
+        """Cleanly terminate the application and release all OS resources."""
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        if self._mutex and sys.platform == "win32":
+            try:
+                ctypes.windll.kernel32.CloseHandle(self._mutex)
+            except Exception:
+                pass
+        # os._exit immediately terminates all threads and releases all kernel handles
+        os._exit(0)
 
     def _handle_new_note(self, x: Optional[int] = None, y: Optional[int] = None):
-        """Create a new note with automatic position cascade (unpinned by default)."""
+        """Create a new note with automatic cascade placement (unpinned by default)."""
         if x is None or y is None:
             count = len(self.windows)
             x = 220 + (count % 6) * 35
@@ -271,8 +263,7 @@ class StickyApp:
         self.storage.permanently_delete_note(note_id)
         if not self.windows:
             if not (self.hub and self.hub.win.winfo_exists()):
-                self.root.destroy()
-                sys.exit(0)
+                self._shutdown()
 
     def run(self):
         """Run the main GUI loop."""
