@@ -13,10 +13,11 @@ import traceback
 from typing import Dict, Optional
 
 # Ensure safe streams when launched via pythonw without a console
+_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_error.log")
 if sys.stdout is None:
-    sys.stdout = open(os.devnull, "w")
+    sys.stdout = open(_log_path, "a", encoding="utf-8")
 if sys.stderr is None:
-    sys.stderr = open(os.devnull, "w")
+    sys.stderr = open(_log_path, "a", encoding="utf-8")
 
 from styles import enable_high_dpi, force_foreground_window
 from storage import StorageManager
