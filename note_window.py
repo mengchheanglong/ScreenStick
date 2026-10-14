@@ -406,7 +406,7 @@ class NoteWindow:
 
         bx = self.btn_menu.winfo_rootx()
         by = self.btn_menu.winfo_rooty() + self.btn_menu.winfo_height() + 4
-        popup.geometry(f"245x165+{bx - 185}+{by}")
+        popup.geometry(f"245x198+{bx - 185}+{by}")
 
         card = tk.Frame(popup, bg="#FFFFFF", bd=1, relief="solid")
         card.pack(fill="both", expand=True)
@@ -498,6 +498,26 @@ class NoteWindow:
         lbl_hub.bind("<Button-1>", lambda e: (popup.destroy(), self.on_open_hub()))
         lbl_hub.bind("<Enter>", lambda e: lbl_hub.configure(bg="#F3F4F6"))
         lbl_hub.bind("<Leave>", lambda e: lbl_hub.configure(bg="#FFFFFF"))
+
+        # Divider
+        tk.Frame(card, bg="#E5E7EB", height=1).pack(fill="x", padx=6, pady=2)
+
+        # 5. Delete note option
+        lbl_del = tk.Label(
+            card,
+            text="🗑️  Delete Note",
+            font=(FONT_FAMILY, 9),
+            bg="#FFFFFF",
+            fg="#DC2626",
+            anchor="w",
+            padx=10,
+            pady=3,
+            cursor="hand2"
+        )
+        lbl_del.pack(fill="x")
+        lbl_del.bind("<Button-1>", lambda e: (popup.destroy(), self._on_delete_clicked()))
+        lbl_del.bind("<Enter>", lambda e: lbl_del.configure(bg="#FEE2E2"))
+        lbl_del.bind("<Leave>", lambda e: lbl_del.configure(bg="#FFFFFF"))
 
         popup.bind("<FocusOut>", lambda e: (popup.destroy(), self._schedule_leave_check_direct()))
         popup.focus_set()
@@ -702,10 +722,20 @@ class NoteWindow:
         self.on_new_note(nx, ny)
 
     def _on_close_clicked(self):
+        """Called when user clicks ✕ to close the window (saves note, keeps in DB)."""
         if self._is_closing:
             return
         self._is_closing = True
         self._do_save()
+        if self.on_close_window:
+            self.on_close_window(self.note_id)
+        self.destroy()
+
+    def _on_delete_clicked(self):
+        """Called when user selects Delete Note from menu (removes note from DB)."""
+        if self._is_closing:
+            return
+        self._is_closing = True
         self.on_delete(self.note_id)
         self.destroy()
 
@@ -772,6 +802,36 @@ class NoteWindow:
         menu.add_command(label="Checklist Item ([ ])", command=self._insert_checkbox)
         menu.add_command(label="Bullet List (•)", command=self._insert_bullet)
         menu.tk_popup(event.x_root, event.y_root)
+
+    def lift_to_front(self):
+        """Actively bring note window to front of all applications on screen."""
+        try:
+            self.win.deiconify()
+            self.win.lift()
+            self.win.attributes("-topmost", True)
+            self.win.focus_force()
+            self.text_widget.focus_set()
+            if sys.platform == "win32":
+                try:
+                    import ctypes
+                    hwnd = ctypes.windll.user32.GetParent(self.win.winfo_id())
+                    from styles import force_foreground_window
+                    force_foreground_window(hwnd)
+                except Exception:
+                    pass
+            # If in Stick to Screen mode (unpinned), release topmost after brief delay
+            # so other applications naturally come on top when user works in them
+            if not self.is_pinned:
+                def _settle_to_desktop():
+                    try:
+                        if self.win.winfo_exists() and not self.is_pinned:
+                            self.win.attributes("-topmost", False)
+                            stick_window_to_desktop(self.win)
+                    except Exception:
+                        pass
+                self.win.after(800, _settle_to_desktop)
+        except Exception:
+            pass
 
     def focus(self):
         """Focus text widget while respecting stick to screen / pinned state."""

@@ -139,10 +139,10 @@ class StickyApp:
             self._init_notes(active_notes, False)
         else:
             for win in self.windows.values():
-                win.focus()
+                win.lift_to_front()
 
     def _clean_dead_windows(self):
-        """Remove references to any destroyed Tk windows."""
+        """Remove references to any destroyed Tk windows. Shut down if all closed."""
         dead = []
         for nid, w in self.windows.items():
             try:
@@ -152,6 +152,8 @@ class StickyApp:
                 dead.append(nid)
         for nid in dead:
             del self.windows[nid]
+        if not self.windows and not (self.hub and self.hub.win.winfo_exists()):
+            self._shutdown()
 
     def _init_notes(self, active_notes, is_startup_mode: bool):
         """Open existing active notes, or create one clean starter note on manual launch."""
@@ -166,18 +168,21 @@ class StickyApp:
                     color="yellow",
                     is_pinned=False
                 )
-                self._open_note_window(note)
+                self._open_note_window(note, lift=True)
         else:
             for note_data in active_notes:
-                self._open_note_window(note_data)
+                self._open_note_window(note_data, lift=not is_startup_mode)
 
-    def _open_note_window(self, note_data: dict) -> NoteWindow:
+    def _open_note_window(self, note_data: dict, lift: bool = True) -> NoteWindow:
         """Create and display a NoteWindow for the given note data."""
         note_id = note_data["id"]
         if note_id in self.windows:
             try:
                 if self.windows[note_id].win.winfo_exists():
-                    self.windows[note_id].focus()
+                    if lift:
+                        self.windows[note_id].lift_to_front()
+                    else:
+                        self.windows[note_id].focus()
                     return self.windows[note_id]
             except Exception:
                 pass
@@ -192,18 +197,18 @@ class StickyApp:
             on_close_window=self._handle_window_close
         )
         self.windows[note_id] = win
-        win.focus()
+        if lift:
+            win.lift_to_front()
+        else:
+            win.focus()
         return win
 
     def _handle_window_close(self, note_id: str):
-        """Called when a note window is closed via Taskbar or Alt+F4 (keeps note in DB)."""
+        """Called when a note window is closed via ✕, Taskbar or Alt+F4 (keeps note in DB)."""
         win = self.windows.pop(note_id, None)
         if win:
             win.destroy()
         self._clean_dead_windows()
-        if not self.windows:
-            if not (self.hub and self.hub.win.winfo_exists()):
-                self._shutdown()
 
     def _handle_update(self, note_id: str, updates: dict):
         """Save updates to SQLite disk database."""
@@ -261,8 +266,7 @@ class StickyApp:
             color=chosen_color,
             is_pinned=False
         )
-        win = self._open_note_window(note)
-        win.focus()
+        win = self._open_note_window(note, lift=True)
 
         if self.hub and self.hub.win.winfo_exists():
             self.hub.refresh_notes()
@@ -283,12 +287,11 @@ class StickyApp:
     def _open_existing_note(self, note_id: str):
         """Open or focus a note by ID."""
         if note_id in self.windows and self.windows[note_id].win.winfo_exists():
-            self.windows[note_id].focus()
+            self.windows[note_id].lift_to_front()
         else:
             note_data = self.storage.get_note(note_id)
             if note_data:
-                win = self._open_note_window(note_data)
-                win.focus()
+                self._open_note_window(note_data, lift=True)
 
     def _handle_delete_permanently(self, note_id: str):
         """Permanently delete note from storage and screen."""
