@@ -21,7 +21,7 @@ from storage import StorageManager
 from note_window import NoteWindow
 from notes_hub import NotesHub
 
-MUTEX_NAME = "ScreenStick_Application_Mutex_v1"
+MUTEX_NAME = "ScreenStick_Application_Mutex_v2"
 TRIGGER_FILENAME = ".new_note_trigger"
 
 def get_trigger_path() -> str:
@@ -60,6 +60,26 @@ def bring_all_sticky_notes_to_front() -> int:
     except Exception:
         return 0
 
+def cleanup_zombie_instances():
+    """If another pythonw instance is running app.py with ZERO visible windows, terminate it."""
+    my_pid = os.getpid()
+    try:
+        import psutil
+        current_script = os.path.abspath(__file__).lower()
+        for p in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                if p.pid == my_pid:
+                    continue
+                name = (p.info['name'] or '').lower()
+                if 'python' in name:
+                    cmdline = [str(arg).lower() for arg in (p.info['cmdline'] or [])]
+                    if any(current_script in arg or 'app.py' in arg for arg in cmdline):
+                        p.kill()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 class StickyApp:
     def __init__(self, check_single_instance: bool = True):
         is_startup_mode = "--startup" in sys.argv
@@ -73,20 +93,22 @@ class StickyApp:
 
         self._mutex = None
         if check_single_instance and sys.platform == "win32":
-            kernel32 = ctypes.windll.kernel32
-            self._mutex = kernel32.CreateMutexW(None, False, MUTEX_NAME)
-            if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-                # Another instance is already running!
-                # 1. Bring existing notes to the front
-                bring_all_sticky_notes_to_front()
-                # 2. Drop trigger file for running instance to spawn/focus
+            vis_count = bring_all_sticky_notes_to_front()
+            if vis_count > 0:
+                # Visible ScreenStick notes are already on the user's screen!
+                # Drop trigger file to spawn a new note or focus an empty one
                 try:
                     with open(get_trigger_path(), "w") as f:
                         f.write("NEW")
                 except Exception:
                     pass
-                # 3. Clean OS exit - never hangs as a zombie
                 os._exit(0)
+            else:
+                # ZERO visible notes on screen! Kill any headless ghost processes
+                cleanup_zombie_instances()
+                # Acquire fresh mutex
+                kernel32 = ctypes.windll.kernel32
+                self._mutex = kernel32.CreateMutexW(None, False, MUTEX_NAME)
 
         # High DPI awareness for crisp Windows laptop displays
         enable_high_dpi()
@@ -111,8 +133,21 @@ class StickyApp:
 
         self._init_notes(active_notes, is_startup_mode)
 
+    def _clean_dead_windows(self):
+        """Remove references to any destroyed Tk windows."""
+        dead = []
+        for nid, w in self.windows.items():
+            try:
+                if not w.win.winfo_exists():
+                    dead.append(nid)
+            except Exception:
+                dead.append(nid)
+        for nid in dead:
+            del self.windows[nid]
+
     def _check_trigger_file(self):
         """Poll for trigger file created when user clicks shortcut while app is running."""
+        self._clean_dead_windows()
         trigger_path = get_trigger_path()
         if os.path.exists(trigger_path):
             try:
@@ -121,7 +156,8 @@ class StickyApp:
                 pass
             # Focus existing notes or spawn new note
             if not self.windows:
-                self._handle_new_note(320, 160)
+                active_notes = self.storage.get_active_notes()
+                self._init_notes(active_notes, False)
             else:
                 for win in self.windows.values():
                     win.focus()
@@ -155,8 +191,12 @@ class StickyApp:
         """Create and display a NoteWindow for the given note data."""
         note_id = note_data["id"]
         if note_id in self.windows:
-            self.windows[note_id].focus()
-            return self.windows[note_id]
+            try:
+                if self.windows[note_id].win.winfo_exists():
+                    self.windows[note_id].focus()
+                    return self.windows[note_id]
+            except Exception:
+                pass
 
         win = NoteWindow(
             master=self.root,
@@ -164,11 +204,21 @@ class StickyApp:
             on_update=self._handle_update,
             on_delete=self._handle_delete,
             on_new_note=self._handle_new_note,
-            on_open_hub=self.open_notes_hub
+            on_open_hub=self.open_notes_hub,
+            on_close_window=self._handle_window_close
         )
         self.windows[note_id] = win
         win.focus()
         return win
+
+    def _handle_window_close(self, note_id: str):
+        """Called when a note window is closed via Taskbar or Alt+F4 (keeps note in DB)."""
+        if note_id in self.windows:
+            del self.windows[note_id]
+        self._clean_dead_windows()
+        if not self.windows:
+            if not (self.hub and self.hub.win.winfo_exists()):
+                self._shutdown()
 
     def _handle_update(self, note_id: str, updates: dict):
         """Save updates to SQLite disk database."""
@@ -177,18 +227,22 @@ class StickyApp:
             self.hub.refresh_notes()
 
     def _handle_delete(self, note_id: str):
-        """Handle closing/deleting a note."""
+        """Handle deleting/removing a note when user clicks ✕."""
         if note_id in self.windows:
-            self.windows[note_id].destroy()
-            del self.windows[note_id]
+            try:
+                self.windows[note_id].destroy()
+            except Exception:
+                pass
+            if note_id in self.windows:
+                del self.windows[note_id]
 
         self.storage.soft_delete_note(note_id)
 
         if self.hub and self.hub.win.winfo_exists():
             self.hub.refresh_notes()
 
-        # When the last note is closed:
-        # Exit cleanly and terminate the process completely!
+        self._clean_dead_windows()
+        # When all notes are closed, exit cleanly and terminate the process completely!
         if not self.windows:
             if not (self.hub and self.hub.win.winfo_exists()):
                 self._shutdown()
@@ -209,6 +263,7 @@ class StickyApp:
 
     def _handle_new_note(self, x: Optional[int] = None, y: Optional[int] = None):
         """Create a new note with automatic cascade placement (unpinned by default)."""
+        self._clean_dead_windows()
         if x is None or y is None:
             count = len(self.windows)
             x = 220 + (count % 6) * 35
@@ -247,7 +302,7 @@ class StickyApp:
 
     def _open_existing_note(self, note_id: str):
         """Open or focus a note by ID."""
-        if note_id in self.windows:
+        if note_id in self.windows and self.windows[note_id].win.winfo_exists():
             self.windows[note_id].focus()
         else:
             note_data = self.storage.get_note(note_id)
@@ -258,9 +313,14 @@ class StickyApp:
     def _handle_delete_permanently(self, note_id: str):
         """Permanently delete note from storage and screen."""
         if note_id in self.windows:
-            self.windows[note_id].destroy()
-            del self.windows[note_id]
+            try:
+                self.windows[note_id].destroy()
+            except Exception:
+                pass
+            if note_id in self.windows:
+                del self.windows[note_id]
         self.storage.permanently_delete_note(note_id)
+        self._clean_dead_windows()
         if not self.windows:
             if not (self.hub and self.hub.win.winfo_exists()):
                 self._shutdown()

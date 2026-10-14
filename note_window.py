@@ -25,7 +25,8 @@ class NoteWindow:
         on_update: Callable[[str, Dict[str, Any]], None],
         on_delete: Callable[[str], None],
         on_new_note: Callable[[Optional[int], Optional[int]], None],
-        on_open_hub: Callable[[], None]
+        on_open_hub: Callable[[], None],
+        on_close_window: Optional[Callable[[str], None]] = None
     ):
         self.master = master
         self.data = note_data
@@ -34,6 +35,7 @@ class NoteWindow:
         self.on_delete = on_delete
         self.on_new_note = on_new_note
         self.on_open_hub = on_open_hub
+        self.on_close_window = on_close_window
 
         self.color_key = note_data.get("color", "yellow")
         if self.color_key not in THEMES:
@@ -267,6 +269,10 @@ class NoteWindow:
         self.btn_check.bind("<Button-1>", lambda e: self._insert_checkbox())
         self.btn_menu.bind("<Button-1>", lambda e: self._toggle_menu_popup())
         self.btn_close.bind("<Button-1>", lambda e: self._on_close_clicked())
+
+        # Handle closing from Taskbar (right-click -> close) or Alt+F4
+        self.win.protocol("WM_DELETE_WINDOW", self._on_wm_delete)
+        self.win.bind("<Destroy>", self._on_win_destroy, add="+")
 
         # Button hover highlights
         for btn in [self.btn_new, self.btn_bold, self.btn_italic, self.btn_underline,
@@ -754,5 +760,22 @@ class NoteWindow:
         except Exception:
             pass
 
+    def _on_wm_delete(self):
+        """Called when user closes from Taskbar (right-click -> close) or Alt+F4."""
+        self._do_save()
+        if self.on_close_window:
+            self.on_close_window(self.note_id)
+        else:
+            self.destroy()
+
+    def _on_win_destroy(self, event):
+        """Called when the Tk window is destroyed."""
+        if event.widget == self.win:
+            if self.on_close_window:
+                self.on_close_window(self.note_id)
+
     def destroy(self):
-        self.win.destroy()
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
