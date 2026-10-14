@@ -475,26 +475,6 @@ class NoteWindow:
         lbl_hub.bind("<Enter>", lambda e: lbl_hub.configure(bg="#F3F4F6"))
         lbl_hub.bind("<Leave>", lambda e: lbl_hub.configure(bg="#FFFFFF"))
 
-        # Divider
-        tk.Frame(card, bg="#E5E7EB", height=1).pack(fill="x", padx=6, pady=2)
-
-        # 5. Delete note option
-        lbl_del = tk.Label(
-            card,
-            text="🗑️  Delete Note",
-            font=(FONT_FAMILY, 9),
-            bg="#FFFFFF",
-            fg="#DC2626",
-            anchor="w",
-            padx=10,
-            pady=3,
-            cursor="hand2"
-        )
-        lbl_del.pack(fill="x")
-        lbl_del.bind("<Button-1>", lambda e: (popup.destroy(), self._on_close_clicked()))
-        lbl_del.bind("<Enter>", lambda e: lbl_del.configure(bg="#FEE2E2"))
-        lbl_del.bind("<Leave>", lambda e: lbl_del.configure(bg="#FFFFFF"))
-
         popup.bind("<FocusOut>", lambda e: (popup.destroy(), self._schedule_leave_check_direct()))
         popup.focus_set()
 
