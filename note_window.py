@@ -50,6 +50,7 @@ class NoteWindow:
         self._is_hovered = False
         self._leave_timer = None
         self._tools_popup = None
+        self._is_closing = False
 
         # Window creation
         self.win = tk.Toplevel(master)
@@ -273,6 +274,7 @@ class NoteWindow:
         # Handle closing from Taskbar (right-click -> close) or Alt+F4
         self.win.protocol("WM_DELETE_WINDOW", self._on_wm_delete)
         self.win.bind("<Destroy>", self._on_win_destroy, add="+")
+        self.win.bind("<FocusOut>", self._on_focus_out, add="+")
 
         # Button hover highlights
         for btn in [self.btn_new, self.btn_bold, self.btn_italic, self.btn_underline,
@@ -472,6 +474,26 @@ class NoteWindow:
         lbl_hub.bind("<Button-1>", lambda e: (popup.destroy(), self.on_open_hub()))
         lbl_hub.bind("<Enter>", lambda e: lbl_hub.configure(bg="#F3F4F6"))
         lbl_hub.bind("<Leave>", lambda e: lbl_hub.configure(bg="#FFFFFF"))
+
+        # Divider
+        tk.Frame(card, bg="#E5E7EB", height=1).pack(fill="x", padx=6, pady=2)
+
+        # 5. Delete note option
+        lbl_del = tk.Label(
+            card,
+            text="🗑️  Delete Note",
+            font=(FONT_FAMILY, 9),
+            bg="#FFFFFF",
+            fg="#DC2626",
+            anchor="w",
+            padx=10,
+            pady=3,
+            cursor="hand2"
+        )
+        lbl_del.pack(fill="x")
+        lbl_del.bind("<Button-1>", lambda e: (popup.destroy(), self._on_close_clicked()))
+        lbl_del.bind("<Enter>", lambda e: lbl_del.configure(bg="#FEE2E2"))
+        lbl_del.bind("<Leave>", lambda e: lbl_del.configure(bg="#FFFFFF"))
 
         popup.bind("<FocusOut>", lambda e: (popup.destroy(), self._schedule_leave_check_direct()))
         popup.focus_set()
@@ -674,7 +696,12 @@ class NoteWindow:
         self.on_new_note(nx, ny)
 
     def _on_close_clicked(self):
+        if self._is_closing:
+            return
+        self._is_closing = True
+        self._do_save()
         self.on_delete(self.note_id)
+        self.destroy()
 
     def _schedule_save(self, event=None):
         if self._save_timer:
@@ -746,35 +773,53 @@ class NoteWindow:
             self.win.deiconify()
             self.win.lift()
             self.win.attributes("-topmost", True)
-            if not self.is_pinned:
-                self.win.after(350, lambda: self.win.attributes("-topmost", False) if (self.win.winfo_exists() and not self.is_pinned) else None)
             self.win.focus_force()
             self.text_widget.focus_set()
             if sys.platform == "win32":
                 try:
                     import ctypes
                     hwnd = ctypes.windll.user32.GetParent(self.win.winfo_id())
-                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+                    from styles import force_foreground_window
+                    force_foreground_window(hwnd)
                 except Exception:
                     pass
         except Exception:
             pass
 
+    def _on_focus_out(self, event):
+        """When note loses focus to another application, relinquish topmost if unpinned."""
+        if self.is_pinned:
+            return
+        def check_focus():
+            try:
+                if not self.win.winfo_exists():
+                    return
+                focused = self.win.focus_get()
+                if focused is None and not self.is_pinned:
+                    self.win.attributes("-topmost", False)
+            except Exception:
+                pass
+        self.win.after(150, check_focus)
+
     def _on_wm_delete(self):
         """Called when user closes from Taskbar (right-click -> close) or Alt+F4."""
+        if self._is_closing:
+            return
+        self._is_closing = True
         self._do_save()
         if self.on_close_window:
             self.on_close_window(self.note_id)
-        else:
-            self.destroy()
+        self.destroy()
 
     def _on_win_destroy(self, event):
         """Called when the Tk window is destroyed."""
-        if event.widget == self.win:
+        if event.widget == self.win and not self._is_closing:
+            self._is_closing = True
             if self.on_close_window:
                 self.on_close_window(self.note_id)
 
     def destroy(self):
+        self._is_closing = True
         try:
             self.win.destroy()
         except Exception:

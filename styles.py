@@ -158,3 +158,36 @@ def set_window_z_order(window, is_pinned: bool):
         window.wm_attributes("-topmost", bool(is_pinned))
     except Exception:
         pass
+
+def force_foreground_window(hwnd: int):
+    """Reliably activate and bring hwnd to foreground on Windows 10/11."""
+    if sys.platform != "win32" or not hwnd:
+        return
+    try:
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        
+        # Restore if minimized
+        user32.ShowWindow(hwnd, 9) # SW_RESTORE
+        
+        fore_hwnd = user32.GetForegroundWindow()
+        fore_thread = user32.GetWindowThreadProcessId(fore_hwnd, None)
+        cur_thread = kernel32.GetCurrentThreadId()
+        
+        if fore_thread != cur_thread:
+            user32.AttachThreadInput(cur_thread, fore_thread, True)
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+            user32.AttachThreadInput(cur_thread, fore_thread, False)
+        else:
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+            
+        HWND_TOPMOST = -1
+        SWP_NOMOVE = 0x0002
+        SWP_NOSIZE = 0x0001
+        SWP_SHOWWINDOW = 0x0040
+        user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
+    except Exception:
+        pass
+
