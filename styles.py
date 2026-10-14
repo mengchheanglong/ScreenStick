@@ -152,10 +152,29 @@ def make_taskbar_friendly(window, is_pinned=False):
     except Exception:
         pass
 
+def stick_window_to_desktop(window):
+    """Enforce window staying at HWND_BOTTOM (desktop wallpaper level behind all other apps)."""
+    if sys.platform != "win32":
+        return
+    try:
+        window.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        if not hwnd:
+            hwnd = window.winfo_id()
+        HWND_BOTTOM = 1
+        SWP_NOMOVE = 0x0002
+        SWP_NOSIZE = 0x0001
+        SWP_NOACTIVATE = 0x0010
+        ctypes.windll.user32.SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+    except Exception:
+        pass
+
 def set_window_z_order(window, is_pinned: bool):
-    """Set window z-order: topmost if pinned, desktop level if unpinned (other apps come on top)."""
+    """Set window z-order: topmost if pinned, desktop wallpaper level if unpinned (sticks to screen)."""
     try:
         window.wm_attributes("-topmost", bool(is_pinned))
+        if not is_pinned:
+            stick_window_to_desktop(window)
     except Exception:
         pass
 

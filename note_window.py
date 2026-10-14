@@ -15,7 +15,7 @@ import os
 import tkinter as tk
 from tkinter import font as tkfont
 from typing import Optional, Callable, Dict, Any
-from styles import THEMES, FONT_FAMILY, BASE_FONT_SIZE, apply_drop_shadow, make_taskbar_friendly, set_window_z_order
+from styles import THEMES, FONT_FAMILY, BASE_FONT_SIZE, apply_drop_shadow, make_taskbar_friendly, set_window_z_order, stick_window_to_desktop
 
 class NoteWindow:
     def __init__(
@@ -276,6 +276,16 @@ class NoteWindow:
         self.win.bind("<Destroy>", self._on_win_destroy, add="+")
         self.win.bind("<FocusOut>", self._on_focus_out, add="+")
 
+        # Stick to Screen (stays on wallpaper behind other apps even when clicked or edited)
+        def _enforce_stick_to_screen(e=None):
+            if not self.is_pinned:
+                stick_window_to_desktop(self.win)
+                self.win.after_idle(lambda: not self.is_pinned and stick_window_to_desktop(self.win))
+
+        for w in [self.win, self.main_container, self.text_widget, self.header_frame]:
+            for ev in ["<Button-1>", "<ButtonRelease-1>", "<FocusIn>", "<KeyRelease>"]:
+                w.bind(ev, _enforce_stick_to_screen, add="+")
+
         # Button hover highlights
         for btn in [self.btn_new, self.btn_bold, self.btn_italic, self.btn_underline,
                     self.btn_strike, self.btn_bullet, self.btn_check, self.btn_menu]:
@@ -341,6 +351,8 @@ class NoteWindow:
         self.x = self.win.winfo_x()
         self.y = self.win.winfo_y()
         self.on_update(self.note_id, {"x": self.x, "y": self.y})
+        if not self.is_pinned:
+            stick_window_to_desktop(self.win)
 
     # --- Hover Management: Header appears on hover, disappears on leave ---
     def _on_mouse_enter(self, event=None):
@@ -394,7 +406,7 @@ class NoteWindow:
 
         bx = self.btn_menu.winfo_rootx()
         by = self.btn_menu.winfo_rooty() + self.btn_menu.winfo_height() + 4
-        popup.geometry(f"230x165+{bx - 170}+{by}")
+        popup.geometry(f"245x165+{bx - 185}+{by}")
 
         card = tk.Frame(popup, bg="#FFFFFF", bd=1, relief="solid")
         card.pack(fill="both", expand=True)
@@ -421,16 +433,26 @@ class NoteWindow:
         # Divider
         tk.Frame(card, bg="#E5E7EB", height=1).pack(fill="x", padx=6, pady=2)
 
-        # 2. Pin / Desktop Sticking Toggle
+        # 2. Stick to Screen / Always on Top Toggle
         pin_row = tk.Frame(card, bg="#FFFFFF", padx=8, pady=4)
         pin_row.pack(fill="x")
-        pin_txt = "📌 Unpin from Top (Stick to Desktop)" if self.is_pinned else "📍 Pin to Top of Screen"
+        if self.is_pinned:
+            pin_txt = "📌  Always on Top: ON"
+            pin_bg = "#EFF6FF"
+            pin_fg = "#2563EB"
+            hover_bg = "#DBEAFE"
+        else:
+            pin_txt = "🖥️  Stick to Screen (Wallpaper: ON)"
+            pin_bg = "#ECFDF5"
+            pin_fg = "#059669"
+            hover_bg = "#D1FAE5"
+
         lbl_pin = tk.Label(
             pin_row,
             text=pin_txt,
             font=(FONT_FAMILY, 9),
-            bg="#EFF6FF" if self.is_pinned else "#F9FAFB",
-            fg="#2563EB" if self.is_pinned else "#374151",
+            bg=pin_bg,
+            fg=pin_fg,
             anchor="w",
             padx=6,
             pady=3,
@@ -438,6 +460,8 @@ class NoteWindow:
         )
         lbl_pin.pack(fill="x")
         lbl_pin.bind("<Button-1>", lambda e: (popup.destroy(), self.toggle_pin()))
+        lbl_pin.bind("<Enter>", lambda e: lbl_pin.configure(bg=hover_bg))
+        lbl_pin.bind("<Leave>", lambda e: lbl_pin.configure(bg=pin_bg))
 
         # Divider
         tk.Frame(card, bg="#E5E7EB", height=1).pack(fill="x", padx=6, pady=2)
@@ -542,6 +566,8 @@ class NoteWindow:
         self.h = self.win.winfo_height()
         self.prev_height = self.h
         self.on_update(self.note_id, {"width": self.w, "height": self.h})
+        if not self.is_pinned:
+            stick_window_to_desktop(self.win)
 
     # --- Pin & Desktop Sticking State ---
     def toggle_collapse(self):
@@ -748,26 +774,30 @@ class NoteWindow:
         menu.tk_popup(event.x_root, event.y_root)
 
     def focus(self):
-        """Bring note to front and focus text widget."""
+        """Focus text widget while respecting stick to screen / pinned state."""
         try:
             self.win.deiconify()
-            self.win.lift()
-            self.win.attributes("-topmost", True)
-            self.win.focus_force()
-            self.text_widget.focus_set()
-            if sys.platform == "win32":
-                try:
-                    import ctypes
-                    hwnd = ctypes.windll.user32.GetParent(self.win.winfo_id())
-                    from styles import force_foreground_window
-                    force_foreground_window(hwnd)
-                except Exception:
-                    pass
+            if self.is_pinned:
+                self.win.lift()
+                self.win.attributes("-topmost", True)
+                self.win.focus_force()
+                self.text_widget.focus_set()
+                if sys.platform == "win32":
+                    try:
+                        import ctypes
+                        hwnd = ctypes.windll.user32.GetParent(self.win.winfo_id())
+                        from styles import force_foreground_window
+                        force_foreground_window(hwnd)
+                    except Exception:
+                        pass
+            else:
+                stick_window_to_desktop(self.win)
+                self.text_widget.focus_set()
         except Exception:
             pass
 
     def _on_focus_out(self, event):
-        """When note loses focus to another application, relinquish topmost if unpinned."""
+        """When note loses focus to another application, stick to desktop if unpinned."""
         if self.is_pinned:
             return
         def check_focus():
@@ -777,6 +807,7 @@ class NoteWindow:
                 focused = self.win.focus_get()
                 if focused is None and not self.is_pinned:
                     self.win.attributes("-topmost", False)
+                    stick_window_to_desktop(self.win)
             except Exception:
                 pass
         self.win.after(150, check_focus)
